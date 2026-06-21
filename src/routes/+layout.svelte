@@ -15,8 +15,11 @@
 		{ href: '/', label: 'Inicio', public: true },
 		{ href: '/dashboard', label: 'Dashboard', public: true },
 		{ href: '/mapa', label: 'Mapa', public: true },
+		{ href: '/canal-endemico', label: 'Canal Endémico', public: true },
+		{ href: '/triage', label: 'Triage', public: true },
 		{ href: '/casos', label: 'Casos', public: false },
-		{ href: '/alertas', label: 'Alertas', public: true }
+		{ href: '/alertas', label: 'Alertas', public: true },
+		{ href: '/bitacora', label: 'Bitácora', public: false }
 	];
 
 	function getVisibleLinks(role: string | null) {

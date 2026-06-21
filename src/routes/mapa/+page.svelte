@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { supabase } from '$lib/supabase';
-	import type { Zona, AlertaActiva, TasaIncidencia } from '$lib/types';
-	import { ALERT_COLORS } from '$lib/types';
+	import type { Zona, AlertaActiva, TasaIncidencia, CentroSalud } from '$lib/types';
+	import { ALERT_COLORS, DISEASE_COLORS } from '$lib/types';
 
 	let map = $state<any>(null);
 	let zones = $state<Zona[]>([]);
 	let alerts = $state<AlertaActiva[]>([]);
 	let tasas = $state<TasaIncidencia[]>([]);
+	let centros = $state<CentroSalud[]>([]);
+	let resumenZonas = $state<any[]>([]);
+	let enfermedades = $state<string[]>([]);
 	let distritosGeo = $state<any>(null);
 	let loading = $state(true);
 	let selectedZone = $state<Zona | null>(null);
@@ -15,8 +18,13 @@
 	let L: any = null;
 	let districtLayer = $state<any>(null);
 	let markerLayer = $state<any>(null);
+	let heatLayer = $state<any>(null);
+	let centrosLayer = $state<any>(null);
 	let showDistricts = $state(true);
 	let showMarkers = $state(true);
+	let showHeatmap = $state(false);
+	let showCentros = $state(false);
+	let filtroEnfermedad = $state('');
 
 	const DISTRICT_COLORS: Record<string, string> = {
 		muy_alta: '#ef4444',
@@ -26,35 +34,40 @@
 	};
 
 	const DISTRICT_NAMES: Record<number, string> = {
-		1: 'Piraí',
-		2: 'Norte Interno',
-		3: 'Estación Argentina',
-		4: 'El Pari',
-		5: 'Norte',
-		6: 'Pampa de la Isla',
-		7: 'Villa Primero de Mayo',
-		8: 'Ciudadela Andrés Ibáñez',
-		9: 'Palmasola/Sur',
-		10: 'Bajío del Oriente',
-		11: 'Centro',
-		12: 'Nuevo Palmar',
-		13: 'El Palmar',
-		14: 'Paurito',
-		15: 'Montero Hoyos',
-		16: 'Distrito Industrial'
+		1: 'DM1 - Piraí',
+		2: 'DM2 - Norte Interno',
+		3: 'DM3 - Estación Argentina',
+		4: 'DM4 - El Pari',
+		5: 'DM5 - Norte',
+		6: 'DM6 - Pampa de la Isla / El Dorado',
+		7: 'DM7 - Villa 1ro de Mayo',
+		8: 'DM8 - Plan 3000',
+		9: 'DM9 - Palmasola / Sur',
+		10: 'DM10 - El Bajío',
+		11: 'DM11 - Centro',
+		12: 'DM12 - Nuevo Palmar / El Palmar del Oratorio',
+		13: 'DM U/R 13 - Distrito Urbano/Rural - El Palmar',
+		14: 'DM14 - Área Urbana Paurito',
+		15: 'DM15 - Área Urbana Montero Hoyos',
+		16: 'DI - Distrito Industrial'
 	};
 
 	onMount(async () => {
-		const [zonesRes, alertsRes, tasasRes, geoRes] = await Promise.all([
+		const [zonesRes, alertsRes, tasasRes, geoRes, centrosRes, resumenRes] = await Promise.all([
 			supabase.from('zona').select('*'),
 			supabase.from('v_alertas_activas').select('*'),
 			supabase.from('v_tasa_incidencia').select('*'),
-			fetch('/geojson/distritos.geojson')
+			fetch('/geojson/distritos.geojson'),
+			supabase.from('centro_salud').select('*'),
+			supabase.from('v_resumen_zonas').select('*')
 		]);
 
 		zones = zonesRes.data ?? [];
 		alerts = (alertsRes.data ?? []) as unknown as AlertaActiva[];
 		tasas = (tasasRes.data ?? []) as unknown as TasaIncidencia[];
+		centros = centrosRes.data ?? [];
+		resumenZonas = resumenRes.data ?? [];
+		enfermedades = [...new Set(resumenZonas.map((r: any) => r.enfermedad as string))];
 
 		if (geoRes.ok) {
 			const text = await geoRes.text();
@@ -100,8 +113,13 @@
 	async function initMap() {
 		if (!mapContainer) return;
 
-		L = await import('leaflet');
+		const Leaflet = await import('leaflet');
+		L = Leaflet.default || Leaflet;
+		if (typeof window !== 'undefined') {
+			(window as any).L = L;
+		}
 		await import('leaflet/dist/leaflet.css') as any;
+		try { await import('leaflet.heat'); } catch (e) { console.warn('leaflet.heat not loaded:', e); }
 
 		const urlParams = new URLSearchParams(window.location.search);
 		const latParam = urlParams.get('lat');
@@ -144,6 +162,65 @@
 		renderMarkers();
 
 		setTimeout(() => map.invalidateSize(), 100);
+	}
+
+	function renderHeatmap() {
+		if (!L || !map) return;
+		if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+
+		const points: [number, number, number][] = [];
+		resumenZonas.forEach((r: any) => {
+			if (filtroEnfermedad && r.enfermedad !== filtroEnfermedad) return;
+			const zone = zones.find(z => z.id_zona === r.id_zona);
+			if (!zone?.latitud || !zone?.longitud) return;
+			for (let i = 0; i < (r.confirmados ?? 1); i++) {
+				const jitterLat = (Math.random() - 0.5) * 0.008;
+				const jitterLng = (Math.random() - 0.5) * 0.008;
+				points.push([zone.latitud + jitterLat, zone.longitud + jitterLng, 0.6]);
+			}
+		});
+
+		if (points.length > 0 && (L as any).heatLayer) {
+			heatLayer = (L as any).heatLayer(points, {
+				radius: 22, blur: 18, maxZoom: 17, minOpacity: 0.35,
+				gradient: {0.2: '#3b82f6', 0.4: '#22d3ee', 0.6: '#22c55e', 0.8: '#eab308', 1.0: '#ef4444'}
+			}).addTo(map);
+		}
+	}
+
+	function renderCentros() {
+		if (!L || !map) return;
+		if (centrosLayer) { map.removeLayer(centrosLayer); centrosLayer = null; }
+
+		centrosLayer = L.layerGroup();
+		const centroIcon = L.divIcon({
+			html: '<div style="font-size:18px;">🏥</div>',
+			iconSize: [24, 24], iconAnchor: [12, 12], className: ''
+		});
+
+		centros.forEach((c) => {
+			let lat = c.latitud;
+			let lng = c.longitud;
+
+			if (!lat || !lng) {
+				const zone = zones.find((z) => z.id_zona === c.id_zona);
+				if (!zone?.latitud || !zone?.longitud) return;
+				const jLat = (Math.random() - 0.5) * 0.003;
+				const jLng = (Math.random() - 0.5) * 0.003;
+				lat = zone.latitud + jLat;
+				lng = zone.longitud + jLng;
+			}
+
+			const marker = L.marker([lat, lng], { icon: centroIcon });
+			marker.bindPopup(`<div style="font-family:sans-serif;min-width:160px;"><h4 style="margin:0 0 .3rem;color:#1e293b;">${c.nombre}</h4><p style="margin:0;color:#64748b;font-size:.8rem;">${c.tipo ?? 'Centro'} | ${c.direccion ?? ''}</p>${c.telefono ? `<p style="margin:.2rem 0 0;color:#38bdf8;font-size:.8rem;">📞 ${c.telefono}</p>` : ''}</div>`);
+			marker.addTo(centrosLayer);
+		});
+		centrosLayer.addTo(map);
+	}
+
+	function applyFilter() {
+		renderMarkers();
+		if (showHeatmap) renderHeatmap();
 	}
 
 	function renderDistricts() {
@@ -222,9 +299,33 @@
 		zones.forEach((zone) => {
 			if (!zone.latitud || !zone.longitud) return;
 
+			const zoneResumenList = resumenZonas.filter((r) => r.id_zona === zone.id_zona);
+			let confirmados = 0;
+			let sospechosos = 0;
+			if (filtroEnfermedad) {
+				const match = zoneResumenList.find((r) => r.enfermedad === filtroEnfermedad);
+				if (match) {
+					confirmados = match.confirmados ?? 0;
+					sospechosos = match.sospechosos ?? 0;
+				}
+			} else {
+				confirmados = zoneResumenList.reduce((sum, r) => sum + (r.confirmados ?? 0), 0);
+				sospechosos = zoneResumenList.reduce((sum, r) => sum + (r.sospechosos ?? 0), 0);
+			}
+
+			// Determine marker color based on case count
+			let color = '#64748b';
+			if (confirmados > 30) color = '#ef4444';
+			else if (confirmados > 15) color = '#f97316';
+			else if (confirmados > 5) color = '#eab308';
+			else if (confirmados > 0) color = '#22c55e';
+
 			const zoneAlert = alerts.find((a) => a.id_zona === zone.id_zona);
-			const color = zoneAlert ? ALERT_COLORS[zoneAlert.nivel] : '#64748b';
-			const radius = zoneAlert ? 15 + (zoneAlert.casos_desde_alerta ?? 0) * 0.5 : 8;
+			if (!filtroEnfermedad && zoneAlert) {
+				color = ALERT_COLORS[zoneAlert.nivel] ?? color;
+			}
+
+			const radius = 8 + Math.min(confirmados * 1.2, 22);
 
 			const circle = L.circleMarker([zone.latitud, zone.longitud], {
 				radius,
@@ -232,21 +333,56 @@
 				color: '#fff',
 				weight: 2,
 				opacity: 1,
-				fillOpacity: 0.7
+				fillOpacity: 0.75
 			});
 
+			let diseaseBreakdown = '';
+			if (filtroEnfermedad) {
+				diseaseBreakdown = `
+					<div style="margin-top: 0.5rem; padding: 0.5rem; background: rgba(56,189,248,0.1); border-radius: 4px;">
+						<strong style="color: #38bdf8;">${filtroEnfermedad}</strong><br/>
+						<span style="font-size: 0.8rem;">Confirmados: <strong>${confirmados}</strong></span><br/>
+						<span style="font-size: 0.8rem;">Sospechosos: <strong>${sospechosos}</strong></span>
+					</div>
+				`;
+			} else {
+				diseaseBreakdown = `
+					<div style="margin-top: 0.5rem; max-height: 120px; overflow-y: auto;">
+						<table style="width: 100%; font-size: 0.8rem; border-collapse: collapse;">
+							<thead>
+								<tr style="border-bottom: 1px solid #e2e8f0; text-align: left; color: #64748b;">
+									<th>Enfermedad</th>
+									<th>Conf.</th>
+									<th>Sosp.</th>
+								</tr>
+							</thead>
+							<tbody>
+								${zoneResumenList.map(r => `
+									<tr style="border-bottom: 1px dashed #f1f5f9;">
+										<td><strong>${r.enfermedad}</strong></td>
+										<td>${r.confirmados}</td>
+										<td>${r.sospechosos}</td>
+									</tr>
+								`).join('') || '<tr><td colspan="3" style="color: #94a3b8; text-align: center;">Sin casos</td></tr>'}
+							</tbody>
+						</table>
+					</div>
+				`;
+			}
+
 			const popupContent = `
-				<div style="font-family: sans-serif; min-width: 200px;">
-					<h3 style="margin: 0 0 0.5rem; color: #1e293b;">${zone.nombre}</h3>
-				<p style="margin: 0; color: #64748b; font-size: 0.85rem;">
-					Distrito ${DISTRICT_NAMES[zone.dm_id ?? 0] ?? `DM ${zone.dm_id}`} | ${zone.municipio}
-				</p>
+				<div style="font-family: sans-serif; min-width: 220px; color: #1e293b;">
+					<h3 style="margin: 0 0 0.25rem; color: #0f172a; font-size: 1rem;">${zone.nombre}</h3>
+					<p style="margin: 0 0 0.5rem; color: #64748b; font-size: 0.8rem;">
+						Distrito ${DISTRICT_NAMES[zone.dm_id ?? 0] ?? `DM ${zone.dm_id}`} | ${zone.municipio}
+					</p>
+					${diseaseBreakdown}
 					${zoneAlert ? `
-						<div style="margin-top: 0.5rem; padding: 0.5rem; background: ${color}22; border-radius: 4px; border-left: 3px solid ${color};">
-							<strong style="color: ${color};">Alerta ${zoneAlert.nivel.toUpperCase()}</strong><br/>
-							<small>${zoneAlert.tipo}: ${zoneAlert.mensaje ?? ''}</small>
+						<div style="margin-top: 0.5rem; padding: 0.5rem; background: ${ALERT_COLORS[zoneAlert.nivel]}22; border-radius: 4px; border-left: 3px solid ${ALERT_COLORS[zoneAlert.nivel]};">
+							<strong style="color: ${ALERT_COLORS[zoneAlert.nivel]}; font-size: 0.8rem;">Alerta ${zoneAlert.nivel.toUpperCase()}</strong><br/>
+							<small style="font-size: 0.75rem;">${zoneAlert.tipo}: ${zoneAlert.mensaje ?? ''}</small>
 						</div>
-					` : '<p style="margin-top: 0.5rem; color: #22c55e;">Sin alertas activas</p>'}
+					` : ''}
 				</div>
 			`;
 
@@ -271,23 +407,29 @@
 	function toggleDistricts() {
 		showDistricts = !showDistricts;
 		if (!map) return;
-		if (showDistricts) {
-			renderDistricts();
-		} else if (districtLayer) {
-			map.removeLayer(districtLayer);
-			districtLayer = null;
-		}
+		if (showDistricts) { renderDistricts(); }
+		else if (districtLayer) { map.removeLayer(districtLayer); districtLayer = null; }
 	}
 
 	function toggleMarkers() {
 		showMarkers = !showMarkers;
 		if (!map) return;
-		if (showMarkers) {
-			renderMarkers();
-		} else if (markerLayer) {
-			map.removeLayer(markerLayer);
-			markerLayer = null;
-		}
+		if (showMarkers) { renderMarkers(); }
+		else if (markerLayer) { map.removeLayer(markerLayer); markerLayer = null; }
+	}
+
+	function toggleHeatmap() {
+		showHeatmap = !showHeatmap;
+		if (!map) return;
+		if (showHeatmap) { renderHeatmap(); }
+		else if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+	}
+
+	function toggleCentros() {
+		showCentros = !showCentros;
+		if (!map) return;
+		if (showCentros) { renderCentros(); }
+		else if (centrosLayer) { map.removeLayer(centrosLayer); centrosLayer = null; }
 	}
 </script>
 
@@ -325,6 +467,14 @@
 		<span class="legend-item"><span class="legend-dot" style="background: #ef4444;"></span> Rojo</span>
 		<span class="legend-item"><span class="legend-dot" style="background: #64748b;"></span> Sin alerta</span>
 	</div>
+	<div class="filter-row">
+		<select class="filter-select" bind:value={filtroEnfermedad} onchange={applyFilter}>
+			<option value="">Todas las enfermedades</option>
+			{#each enfermedades as enf}
+				<option value={enf}>{enf}</option>
+			{/each}
+		</select>
+	</div>
 	<div class="layer-toggles">
 		<label class="toggle-label">
 			<input type="checkbox" checked={showDistricts} onchange={toggleDistricts} />
@@ -333,6 +483,14 @@
 		<label class="toggle-label">
 			<input type="checkbox" checked={showMarkers} onchange={toggleMarkers} />
 			Zonas
+		</label>
+		<label class="toggle-label toggle-heat">
+			<input type="checkbox" checked={showHeatmap} onchange={toggleHeatmap} />
+			🔥 Mapa de calor
+		</label>
+		<label class="toggle-label toggle-centros">
+			<input type="checkbox" checked={showCentros} onchange={toggleCentros} />
+			🏥 Centros de Salud
 		</label>
 	</div>
 </div>
@@ -407,6 +565,30 @@
 	.layer-toggles {
 		display: flex;
 		gap: 1rem;
+		flex-wrap: wrap;
+	}
+
+	.filter-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.filter-select {
+		padding: 0.4rem 0.8rem;
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+		color: var(--color-text);
+		font-size: 0.85rem;
+		cursor: pointer;
+		width: auto;
+	}
+
+	.toggle-heat, .toggle-centros {
+		background: var(--color-surface-2);
+		padding: 0.3rem 0.7rem;
+		border-radius: var(--radius);
+		transition: all 0.2s;
 	}
 
 	.toggle-label {

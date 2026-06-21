@@ -28,6 +28,8 @@ export interface CentroSalud {
 	direccion: string | null;
 	telefono: string | null;
 	id_zona: number;
+	latitud: number | null;
+	longitud: number | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -168,3 +170,49 @@ export const DISEASE_COLORS: Record<string, string> = {
 	Leishmaniasis: '#8b5cf6',
 	Malaria: '#3b82f6'
 };
+
+export interface CanalEndemico {
+	semana_epi: number;
+	enfermedad: string;
+	zona_exito: number;
+	zona_seguridad: number;
+	zona_alerta: number;
+	promedio_historico: number;
+	maximo_historico: number;
+	casos_actuales: number;
+	anio_actual: number;
+	clasificacion_canal: 'exito' | 'seguridad' | 'alerta' | 'epidemia';
+}
+
+export interface BitacoraAuditoria {
+	id_bitacora: number;
+	tabla_afectada: string;
+	operacion: string;
+	id_registro: number;
+	usuario_email: string | null;
+	fecha: string;
+	datos_anteriores: any;
+	datos_nuevos: any;
+}
+
+export const CANAL_COLORS: Record<string, string> = {
+	exito: '#22c55e',
+	seguridad: '#38bdf8',
+	alerta: '#eab308',
+	epidemia: '#ef4444'
+};
+
+export const CANAL_LABELS: Record<string, string> = {
+	exito: 'Zona de Éxito',
+	seguridad: 'Zona de Seguridad',
+	alerta: 'Zona de Alerta',
+	epidemia: 'Zona de Epidemia'
+};
+
+export interface TriageResult {
+	nivel: 'leve' | 'moderado' | 'grave';
+	titulo: string;
+	descripcion: string;
+	color: string;
+	recomendaciones: string[];
+}
