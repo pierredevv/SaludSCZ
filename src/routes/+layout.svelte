@@ -17,6 +17,7 @@
 		{ href: '/mapa', label: 'Mapa', public: true },
 		{ href: '/canal-endemico', label: 'Canal Endémico', public: true },
 		{ href: '/triage', label: 'Triage', public: true },
+		{ href: '/simulador', label: '⚡ Simulador', public: true },
 		{ href: '/casos', label: 'Casos', public: false },
 		{ href: '/alertas', label: 'Alertas', public: true },
 		{ href: '/bitacora', label: 'Bitácora', public: false }

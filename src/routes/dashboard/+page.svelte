@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { supabase } from '$lib/supabase';
 	import type { ResumenZona, EvolucionSemanal, TasaIncidencia } from '$lib/types';
 	import { DISEASE_COLORS, ALERT_COLORS } from '$lib/types';
@@ -19,32 +19,69 @@
 	let enfermedadChart = $state<HTMLCanvasElement | null>(null);
 	let tasaChart = $state<HTMLCanvasElement | null>(null);
 
+	let realTimeChannel: any = null;
+	let chart1: Chart | null = null;
+	let chart2: Chart | null = null;
+	let chart3: Chart | null = null;
+	let chart4: Chart | null = null;
+
 	onMount(async () => {
-		const [resumenRes, evolRes, tasaRes, totalRes, alertasRes] = await Promise.all([
-			supabase.from('v_resumen_zonas').select('*'),
-			supabase.from('v_evolucion_semanal').select('*').order('anio', { ascending: false }).order('semana', { ascending: false }).limit(20),
-			supabase.from('v_tasa_incidencia').select('*'),
-			supabase.from('caso').select('id_caso', { count: 'exact', head: true }),
-			supabase.from('alerta').select('id_alerta', { count: 'exact', head: true }).eq('activa', true)
-		]);
-
-		if (resumenRes.error) error = resumenRes.error.message;
-		else resumenZonas = resumenRes.data ?? [];
-
-		if (evolRes.error) error = evolRes.error.message;
-		else evolucion = evolRes.data ?? [];
-
-		tasas = (tasaRes.data ?? []) as unknown as TasaIncidencia[];
-		totalCasos = totalRes.count ?? 0;
-		alertasActivas = alertasRes.count ?? 0;
-
-		confirmados = resumenZonas.reduce((sum, r) => sum + (r.confirmados ?? 0), 0);
-
+		await loadDashboardData();
 		loading = false;
 
 		await tick();
 		renderCharts();
+
+		// Real-time updates
+		realTimeChannel = supabase
+			.channel('dashboard-cases-channel')
+			.on(
+				'postgres_changes',
+				{ event: 'INSERT', schema: 'public', table: 'caso' },
+				async (payload) => {
+					console.log('Realtime case in dashboard:', payload);
+					await loadDashboardData();
+					renderCharts();
+				}
+			)
+			.subscribe();
 	});
+
+	onDestroy(() => {
+		if (realTimeChannel) {
+			supabase.removeChannel(realTimeChannel);
+		}
+		if (chart1) chart1.destroy();
+		if (chart2) chart2.destroy();
+		if (chart3) chart3.destroy();
+		if (chart4) chart4.destroy();
+	});
+
+	async function loadDashboardData() {
+		try {
+			const [resumenRes, evolRes, tasaRes, totalRes, alertasRes] = await Promise.all([
+				supabase.from('v_resumen_zonas').select('*'),
+				supabase.from('v_evolucion_semanal').select('*').order('anio', { ascending: false }).order('semana', { ascending: false }).limit(20),
+				supabase.from('v_tasa_incidencia').select('*'),
+				supabase.from('caso').select('id_caso', { count: 'exact', head: true }),
+				supabase.from('alerta').select('id_alerta', { count: 'exact', head: true }).eq('activa', true)
+			]);
+
+			if (resumenRes.error) error = resumenRes.error.message;
+			else resumenZonas = resumenRes.data ?? [];
+
+			if (evolRes.error) error = evolRes.error.message;
+			else evolucion = evolRes.data ?? [];
+
+			tasas = (tasaRes.data ?? []) as unknown as TasaIncidencia[];
+			totalCasos = totalRes.count ?? 0;
+			alertasActivas = alertasRes.count ?? 0;
+
+			confirmados = resumenZonas.reduce((sum, r) => sum + (r.confirmados ?? 0), 0);
+		} catch (e: any) {
+			error = e.message;
+		}
+	}
 
 	async function tick() {
 		return new Promise((r) => setTimeout(r, 100));
@@ -57,7 +94,8 @@
 				return resumenZonas.filter((r) => r.zona === z).reduce((sum, r) => sum + r.total_casos, 0);
 			});
 
-			new Chart(casosChart, {
+			if (chart1) chart1.destroy();
+			chart1 = new Chart(casosChart, {
 				type: 'bar',
 				data: {
 					labels: zonas,
@@ -87,7 +125,8 @@
 				return resumenZonas.filter((r) => r.enfermedad === e).reduce((sum, r) => sum + r.total_casos, 0);
 			});
 
-			new Chart(enfermedadChart, {
+			if (chart2) chart2.destroy();
+			chart2 = new Chart(enfermedadChart, {
 				type: 'doughnut',
 				data: {
 					labels: enfermedades,
@@ -125,7 +164,8 @@
 				pointRadius: 3
 			}));
 
-			new Chart(tendenciaChart, {
+			if (chart3) chart3.destroy();
+			chart3 = new Chart(tendenciaChart, {
 				type: 'line',
 				data: { labels: semanas, datasets },
 				options: {
@@ -154,7 +194,8 @@
 
 			const sorted = [...tasas].sort((a, b) => (b.tasa_por_100k ?? 0) - (a.tasa_por_100k ?? 0));
 
-			new Chart(tasaChart, {
+			if (chart4) chart4.destroy();
+			chart4 = new Chart(tasaChart, {
 				type: 'bar',
 				data: {
 					labels: sorted.map((t) => t.zona),

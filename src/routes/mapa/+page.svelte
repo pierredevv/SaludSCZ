@@ -11,6 +11,22 @@
 	let centros = $state<CentroSalud[]>([]);
 	let resumenZonas = $state<any[]>([]);
 	let enfermedades = $state<string[]>([]);
+	let realTimeChannel: any = null;
+	let activeToast = $state<{
+		show: boolean;
+		enfermedad: string;
+		zona: string;
+		latitud: number;
+		longitud: number;
+	}>({ show: false, enfermedad: '', zona: '', latitud: 0, longitud: 0 });
+
+	const DISEASE_NAMES_BY_ID: Record<number, string> = {
+		1: 'Dengue',
+		2: 'Chikungunya',
+		3: 'Zika',
+		4: 'Leishmaniasis',
+		5: 'Malaria'
+	};
 	let distritosGeo = $state<any>(null);
 	let loading = $state(true);
 	let selectedZone = $state<Zona | null>(null);
@@ -85,14 +101,72 @@
 
 		await tick();
 		await initMap();
+
+		// Real-time listener for new cases
+		realTimeChannel = supabase
+			.channel('map-cases-channel')
+			.on(
+				'postgres_changes',
+				{ event: 'INSERT', schema: 'public', table: 'caso' },
+				async (payload) => {
+					console.log('Realtime case received:', payload);
+					const newCase = payload.new;
+					const center = centros.find((c) => c.id_centro === newCase.id_centro);
+					const zone = zones.find((z) => z.id_zona === center?.id_zona);
+					const diseaseName = DISEASE_NAMES_BY_ID[newCase.id_enfermedad] || 'Caso Tropical';
+
+					if (zone) {
+						showRealTimeToast(diseaseName, zone.nombre, zone.latitud || 0, zone.longitud || 0);
+					}
+
+					await refreshMapData();
+				}
+			)
+			.subscribe();
 	});
 
 	onDestroy(() => {
+		if (realTimeChannel) {
+			supabase.removeChannel(realTimeChannel);
+		}
 		if (map) {
 			map.remove();
 			map = null;
 		}
 	});
+
+	function showRealTimeToast(enfermedad: string, zonaNombre: string, lat: number, lng: number) {
+		activeToast = {
+			show: true,
+			enfermedad,
+			zona: zonaNombre,
+			latitud: lat,
+			longitud: lng
+		};
+	}
+
+	function focusOnToast() {
+		if (!map || !activeToast.show) return;
+		map.flyTo([activeToast.latitud, activeToast.longitud], 14, { animate: true, duration: 1.5 });
+		activeToast.show = false;
+	}
+
+	async function refreshMapData() {
+		const [alertsRes, tasasRes, resumenRes] = await Promise.all([
+			supabase.from('v_alertas_activas').select('*'),
+			supabase.from('v_tasa_incidencia').select('*'),
+			supabase.from('v_resumen_zonas').select('*')
+		]);
+
+		alerts = (alertsRes.data ?? []) as unknown as AlertaActiva[];
+		tasas = (tasasRes.data ?? []) as unknown as TasaIncidencia[];
+		resumenZonas = resumenRes.data ?? [];
+
+		// Re-render map layers
+		if (showDistricts && districtLayer) renderDistricts();
+		renderMarkers();
+		if (showHeatmap) renderHeatmap();
+	}
 
 	async function tick() {
 		return new Promise((r) => setTimeout(r, 200));
@@ -521,6 +595,22 @@
 					<button class="btn btn-outline" onclick={() => (selectedZone = null)}>Cerrar</button>
 				</div>
 			{/if}
+
+			{#if activeToast.show}
+				<div class="realtime-toast">
+					<div class="toast-header">
+						<span class="toast-pulse"></span>
+						<strong>🚨 NUEVO CASO DETECTADO</strong>
+					</div>
+					<div class="toast-body">
+						<p>Se registró un caso de <strong style="color: var(--color-primary);">{activeToast.enfermedad}</strong> en <strong>{activeToast.zona}</strong>.</p>
+					</div>
+					<div class="toast-actions">
+						<button class="btn btn-primary btn-sm" onclick={focusOnToast}>🔍 Enfocar</button>
+						<button class="btn btn-outline btn-sm" onclick={() => activeToast.show = false}>Cerrar</button>
+					</div>
+				</div>
+			{/if}
 	</div>
 {/if}
 
@@ -667,6 +757,67 @@
 		margin-top: 0.75rem;
 		width: 100%;
 		justify-content: center;
+	}
+
+	.realtime-toast {
+		position: absolute;
+		bottom: 1.5rem;
+		right: 1.5rem;
+		background: rgba(15, 23, 42, 0.95);
+		border: 1px solid var(--color-primary);
+		border-radius: var(--radius);
+		padding: 1rem;
+		z-index: 1001;
+		width: 320px;
+		box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+		backdrop-filter: blur(8px);
+		animation: slideIn 0.3s ease-out;
+		color: var(--color-text);
+	}
+
+	@keyframes slideIn {
+		from { transform: translateY(100px); opacity: 0; }
+		to { transform: translateY(0); opacity: 1; }
+	}
+
+	.toast-header {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.85rem;
+		color: var(--color-rojo);
+		margin-bottom: 0.5rem;
+		letter-spacing: 0.5px;
+	}
+
+	.toast-pulse {
+		width: 8px;
+		height: 8px;
+		background-color: var(--color-rojo);
+		border-radius: 50%;
+		animation: pulse-red 1s infinite alternate;
+	}
+
+	@keyframes pulse-red {
+		from { opacity: 0.4; }
+		to { opacity: 1; box-shadow: 0 0 8px var(--color-rojo); }
+	}
+
+	.toast-body p {
+		font-size: 0.9rem;
+		line-height: 1.4;
+		margin-bottom: 0.75rem;
+		color: #e2e8f0;
+	}
+
+	.toast-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.toast-actions .btn {
+		padding: 0.3rem 0.6rem;
+		font-size: 0.75rem;
 	}
 
 	@media (max-width: 768px) {
